@@ -1,8 +1,8 @@
 # ShiftPay Escrow — Pro Hackathon 2026 Proje ve Mimari Dokümanı
 **Track:** Genesis Track  
 **Venue:** Grand Pera, Beyoğlu, Istanbul | Rise In x Stellar  
-**Canlı Testnet Contract ID:** `CDAHCXVF4MK66YXZJACNS6QUW6WLEPDNAIAWSWBCQ27USETXXFQVTJD7`  
-**Stellar Expert Gezgini:** [Sözleşmeyi Testnet'te Görüntüle](https://stellar.expert/explorer/testnet/contract/CDAHCXVF4MK66YXZJACNS6QUW6WLEPDNAIAWSWBCQ27USETXXFQVTJD7)
+**Canlı Testnet Contract ID:** `CDV3G7DHQEVUAMKRKK6UXVAUPLY277RRJVZNYAQX44OK4VIW5XUWFPII`  
+**Stellar Expert Gezgini:** [Sözleşmeyi Testnet'te Görüntüle](https://stellar.expert/explorer/testnet/contract/CDV3G7DHQEVUAMKRKK6UXVAUPLY277RRJVZNYAQX44OK4VIW5XUWFPII)
 
 ---
 
@@ -58,7 +58,7 @@ Canlı Testnet Sözleşmesi ([`contracts/shiftpay_escrow/src/lib.rs`](contracts/
 | **DeFi - Yield Partner** | **DeFindex** | Kilitli bütçenin DeFindex Vault'ta getiri üretmesi | `contracts/shiftpay_escrow/src/lib.rs` & `scripts/defindex_integration.js` |
 | **Wallets Partner** | **Stellar Wallets Kit** | **İşçi, işveren ve mağaza cüzdan bağlantıları (Freighter, LOBSTR, Albedo, xBull)** | `scripts/wallets_kit_integration.js` |
 | **Wallets Partner (Social)** | **Privy** | Google ile tek tıkla giriş ve tohumsuz gömülü cüzdan | `scripts/privy_auth.js` |
-| **Core Feature** | **Özel Soroban Sözleşmesi** | `deposit`, `set_wage`, `check_in`, `check_out`, `spend_at_merchant`, `withdraw`, `dispute_checkout` | `contracts/shiftpay_escrow/` & Testnet `CDAHCXVF4MK66YXZJACNS6QUW6WLEPDNAIAWSWBCQ27USETXXFQVTJD7` |
+| **Core Feature** | **Özel Soroban Sözleşmesi** | `deposit`, `set_wage`, `check_in`, `check_out`, `spend_at_merchant`, `withdraw`, `dispute_checkout` | `contracts/shiftpay_escrow/` & Testnet `CDV3G7DHQEVUAMKRKK6UXVAUPLY277RRJVZNYAQX44OK4VIW5XUWFPII` |
 
 ---
 
@@ -79,7 +79,7 @@ graph TD
     end
 
     subgraph "3. Saha Vardiyası & Hakediş (Soroban)"
-        Supervisor[🕵️ Saha Amiri / Oracle] -->|3. Vardiya Onayı| ShiftPay[⚡ ShiftPay Escrow Contract CDAHCXVF...]
+        Supervisor[🕵️ Saha Amiri / Oracle] -->|3. Vardiya Onayı| ShiftPay[⚡ ShiftPay Escrow Contract CDV3G7DH...]
         ShiftPay -->|check_in & check_out| WorkerClaimData[👷 WorkerClaim]
     end
 
