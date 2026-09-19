@@ -7,7 +7,7 @@ export const SHIFTPAY_TESTNET_CONFIG = {
   networkPassphrase: "Test SDF Network ; September 2015",
   rpcUrl: "https://soroban-testnet.stellar.org",
   // Testnet'e deploy edildikten sonra üretilen contract adresi buraya gelir:
-  contractId: "CA...SHIFTPAY_ESCROW_CONTRACT_ID",
+  contractId: "CDAHCXVF4MK66YXZJACNS6QUW6WLEPDNAIAWSWBCQ27USETXXFQVTJD7",
   anchorUrl: "https://testanchor.stellar.org",
   defindexVaultId: "CCJWW63WRWZASW7YIGWASHZVOKMDEKQ557CJOHRA5X3PG5KDPHWVITD5"
 };
