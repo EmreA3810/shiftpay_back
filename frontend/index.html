@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamRail — On-Chain Hakediş & Kapalı Devre Harcama Ağı</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- Header / Navigation -->
+  <header class="app-header">
+    <div class="logo-group">
+      <div class="logo-icon">⚡</div>
+      <div class="logo-text">
+        <span class="brand-name">StreamRail</span>
+        <span class="brand-badge">Stellar Genesis Track</span>
+      </div>
+    </div>
+    
+    <div class="header-right">
+      <div class="network-pill">
+        <span class="dot"></span> Stellar Testnet / Soroban
+      </div>
+      <div class="role-selector">
+        <button class="role-btn active" data-role="worker" id="btn-role-worker">👷 İşçi Paneli</button>
+        <button class="role-btn" data-role="employer" id="btn-role-employer">🏢 İşveren Paneli</button>
+        <button class="role-btn" data-role="merchant" id="btn-role-merchant">☕ Mağaza / Esnaf</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="main-container">
+    
+    <!-- SYSTEM SUMMARY BANNER -->
+    <div class="system-banner">
+      <div class="summary-card">
+        <span class="lbl">İşveren Teminat / Kredi Limiti:</span>
+        <span class="val highlight" id="stat-employer-budget">₺5,000.00 <small>TRY_CREDIT</small></span>
+      </div>
+      <div class="summary-card">
+        <span class="lbl">İşçi Cüzdanı (Kazanılan / Borç):</span>
+        <span class="val" id="stat-worker-balance">₺0.00 <span class="debt-tag" id="stat-debt-tag" style="display:none;">-₺0 Borç</span></span>
+      </div>
+      <div class="summary-card">
+        <span class="lbl">Mağaza Alacağı:</span>
+        <span class="val success" id="stat-merchant-balance">₺0.00</span>
+      </div>
+    </div>
+
+    <!-- VIEW 1: WORKER VIEW -->
+    <section class="view-panel active" id="view-worker">
+      <div class="panel-header">
+        <h2>👷 Saha Personeli & Freelancer Terminali</h2>
+        <p class="subtitle">Çalıştığın an hak ediş biriktir, anlaşmalı mağazalarda anında harca veya IBAN'ına çek.</p>
+      </div>
+
+      <div class="grid-layout">
+        <!-- Shift Status & QR Check-in/out -->
+        <div class="card glass">
+          <div class="card-title">
+            <span class="icon">⏱️</span> Vardiya & Mesai Takibi
+          </div>
+          
+          <div class="shift-display">
+            <div class="status-indicator" id="shift-status-dot"></div>
+            <div class="status-info">
+              <h3 id="shift-status-text">Mesai Başlamadı</h3>
+              <p id="shift-timer-text">Süre: 00:00:00 (Minimum: 5 sn)</p>
+            </div>
+          </div>
+
+          <div class="qr-mock-box" id="qr-box">
+            <div class="qr-graphic">
+              <svg viewBox="0 0 100 100" class="qr-svg">
+                <rect width="100" height="100" fill="#ffffff" rx="8"/>
+                <path d="M10 10h30v30h-30zM60 10h30v30h-30zM10 60h30v30h-30zM20 20h10v10h-10zM70 20h10v10h-10zM20 70h10v10h-10zM50 20h5v15h-5zM20 50h25v5h-25zM60 60h10v10h-10zM80 60h10v20h-10zM50 70h20v10h-20z" fill="#0f172a"/>
+              </svg>
+              <div class="scanner-laser" id="scanner-laser"></div>
+            </div>
+            <span class="qr-label">Lokasyon QR Kodu: ETKINLIK-SAHA-01</span>
+          </div>
+
+          <div class="action-buttons">
+            <button class="btn btn-primary" id="btn-checkin">
+              <span class="btn-icon">📲</span> QR Oku & Check-in Yap
+            </button>
+            <button class="btn btn-warning" id="btn-checkout" disabled>
+              <span class="btn-icon">🏁</span> Vardiyayı Tamamla (Check-out)
+            </button>
+          </div>
+        </div>
+
+        <!-- Wallet & Spend / Withdraw -->
+        <div class="card glass">
+          <div class="card-title">
+            <span class="icon">💳</span> Kullanılabilir Hak Ediş & Harcama
+          </div>
+
+          <div class="wallet-balance-card">
+            <span class="wb-label">Çekilebilir / Harcanabilir Net Tutar</span>
+            <div class="wb-amount" id="worker-available-amt">₺0.00</div>
+            <div class="wage-rate-tag">Tanımlı Günlük Ücret: <strong>₺500.00 / gün</strong></div>
+            <div class="debt-warning-box" id="debt-alert" style="display: none;">
+              ⚠️ <strong>Aktif Borç:</strong> <span id="debt-amount-text">₺0.00</span> (Önceki itirazdan dolayı sonraki hakedişten otomatik düşülecektir).
+            </div>
+          </div>
+
+          <div class="spend-tabs">
+            <button class="tab-btn active" id="tab-spend">🛍️ Mağazada Harca</button>
+            <button class="tab-btn" id="tab-withdraw">🏦 IBAN'a Çek (Anchor)</button>
+          </div>
+
+          <!-- Tab 1: Spend at Merchant -->
+          <div class="tab-content" id="tab-content-spend">
+            <div class="form-group">
+              <label>Anlaşmalı Mağaza Seç:</label>
+              <select id="spend-merchant-select" class="input-control">
+                <option value="Star Kahve (Festival Alanı)">☕ Star Kahve (Festival Alanı)</option>
+                <option value="Kampüs Gurme Market">🥪 Kampüs Gurme Market</option>
+                <option value="Saha Yemek Standı 3">🍔 Saha Yemek Standı 3</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>Harcama Tutarı (TL):</label>
+              <div class="input-with-currency">
+                <input type="number" id="spend-amount-input" class="input-control" value="150" min="10" step="10">
+                <span class="curr">TL</span>
+              </div>
+            </div>
+            <button class="btn btn-success" id="btn-spend-merchant">
+              ⚡ QR ile Mağazada Anında Harca (Sıfır Risk)
+            </button>
+          </div>
+
+          <!-- Tab 2: Withdraw via Anchor -->
+          <div class="tab-content" id="tab-content-withdraw" style="display: none;">
+            <div class="form-group">
+              <label>Çekilecek Tutar (TL):</label>
+              <div class="input-with-currency">
+                <input type="number" id="withdraw-amount-input" class="input-control" value="300" min="50">
+                <span class="curr">TL</span>
+              </div>
+            </div>
+            <div class="form-group">
+              <label>IBAN Bilgisi (SEP-24 Pop-up Akışı):</label>
+              <input type="text" class="input-control" value="TR33 0006 1005 1982 0001 2345 67" readonly>
+            </div>
+            <button class="btn btn-secondary" id="btn-withdraw-anchor">
+              🏛️ Anchor Üzerinden Banka Hesabıma Çek
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 2: EMPLOYER VIEW -->
+    <section class="view-panel" id="view-employer">
+      <div class="panel-header">
+        <h2>🏢 İşveren & Ajans Yönetim Terminali</h2>
+        <p class="subtitle">Nakit bağlamadan Faktoring/Kredi limiti kilitleyin, işçi ücretlerini tanımlayın ve itiraz edin.</p>
+      </div>
+
+      <div class="grid-layout">
+        <!-- Budget / Factoring Lock -->
+        <div class="card glass">
+          <div class="card-title">
+            <span class="icon">🛡️</span> Kredi Limiti / Teminat Kilitleme
+          </div>
+          <p class="card-desc">İşveren sıcak nakit harcamaz. Faktoring/Fintek kurumunun sağladığı on-chain kredi limiti (SEP-41) teminat olarak kilitlenir.</p>
+
+          <div class="form-group">
+            <label>Kilitlenecek Teminat Tutarı:</label>
+            <div class="input-with-currency">
+              <input type="number" id="budget-amount-input" class="input-control" value="2500" step="500">
+              <span class="curr">TRY_CREDIT</span>
+            </div>
+          </div>
+          <button class="btn btn-primary" id="btn-lock-budget">
+            🔒 Teminat Kredisini Sözleşmeye Kilitle
+          </button>
+
+          <hr class="divider"/>
+
+          <div class="card-title">
+            <span class="icon">👤</span> İşçi Ücreti Belirleme (Kişi Bazlı)
+          </div>
+          <div class="form-group">
+            <label>İşçi Cüzdan Adresi:</label>
+            <input type="text" id="worker-addr-input" class="input-control" value="GBWORKER4X79...STELLAR" readonly>
+          </div>
+          <div class="form-group">
+            <label>Günlük Hak Ediş Ücreti:</label>
+            <div class="input-with-currency">
+              <input type="number" id="daily-wage-input" class="input-control" value="500">
+              <span class="curr">TL / Gün</span>
+            </div>
+          </div>
+          <button class="btn btn-secondary" id="btn-set-wage">
+            💾 Günlük Ücreti Güncelle
+          </button>
+        </div>
+
+        <!-- Dispute & Auditing -->
+        <div class="card glass">
+          <div class="card-title">
+            <span class="icon">⚖️</span> Hakediş İtiraz & Ceza Mekanizması (Dispute)
+          </div>
+          <p class="card-desc">İşçi görevini eksik veya hatalı yaptıysa, işveren hakedişe itiraz eder. Para harcanmışsa otomatik borca yazılır.</p>
+
+          <div class="dispute-box">
+            <div class="form-group">
+              <label>İtiraz Edilecek Tutar:</label>
+              <div class="input-with-currency">
+                <input type="number" id="dispute-amount-input" class="input-control" value="500">
+                <span class="curr">TL</span>
+              </div>
+            </div>
+            <button class="btn btn-danger" id="btn-dispute">
+              🚨 Son Vardiyaya İtiraz Et (Dispute / Borç Yaz)
+            </button>
+          </div>
+
+          <div class="audit-stream">
+            <h4>Canlı On-Chain Olaylar (Soroban Events):</h4>
+            <div class="event-terminal" id="event-logs">
+              <div class="log-entry"><span class="log-time">[13:58:00]</span> Sözleşme ilklendirildi (Token: TRY_CREDIT, MinDuration: 5sn).</div>
+              <div class="log-entry"><span class="log-time">[13:58:02]</span> İşveren ₺5,000.00 kredi limitini kilitledi.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- VIEW 3: MERCHANT VIEW -->
+    <section class="view-panel" id="view-merchant">
+      <div class="panel-header">
+        <h2>☕ Anlaşmalı Mağaza / Esnaf Tahsilat Terminali</h2>
+        <p class="subtitle">Sıfır komisyon, sıfır takas riski: İşçinin hak edişini doğrudan kabul edin.</p>
+      </div>
+
+      <div class="grid-layout">
+        <div class="card glass text-center">
+          <div class="card-title"><span class="icon">🏷️</span> Mağaza QR Tahsilat Kodu</div>
+          <div class="qr-mock-box">
+            <div class="qr-graphic large">
+              <svg viewBox="0 0 100 100" class="qr-svg">
+                <rect width="100" height="100" fill="#ffffff" rx="8"/>
+                <path d="M10 10h30v30h-30zM60 10h30v30h-30zM10 60h30v30h-30zM20 20h10v10h-10zM70 20h10v10h-10zM20 70h10v10h-10zM50 20h5v15h-5zM20 50h25v5h-25zM60 60h10v10h-10zM80 60h10v20h-10zM50 70h20v10h-20z" fill="#2563eb"/>
+              </svg>
+            </div>
+            <span class="qr-label">STAR-KAHVE-POS-99</span>
+          </div>
+          <p>İşçiler bu QR kodu okutarak bakiyelerinden doğrudan ödeme yapar.</p>
+        </div>
+
+        <div class="card glass">
+          <div class="card-title"><span class="icon">💰</span> Biriken Tahsilatlar & Kapanış</div>
+          <div class="wallet-balance-card merchant-bg">
+            <span class="wb-label">Biriken Mağaza Alacağı (On-Chain Garantili)</span>
+            <div class="wb-amount" id="merchant-available-amt">₺0.00</div>
+            <small>Bu bakiye kontratta kilitlidir; işverenin iflasından etkilenmez.</small>
+          </div>
+
+          <button class="btn btn-success" id="btn-merchant-settle">
+            🏛️ Alacakları TL Olarak Banka Hesabıma Çek (SEP-24)
+          </button>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

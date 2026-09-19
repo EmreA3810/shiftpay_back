@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Rust / Cargo build artifacts
+target/
+**/target/
+**/*.rs.bk
+Cargo.lock
+
+# Test snapshots and cache
+**/test_snapshots/
+.cargo/
+
+# IDE & OS files
+.DS_Store
+Thumbs.db
+*.log
+.env
+.env.local
+
+# Gemini local settings (optional)
+.gemini/

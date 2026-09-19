@@ -1,0 +1,15 @@
+[package]
+name = "shiftpay-escrow"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+soroban-sdk = "22.0.0"
+
+[dev-dependencies]
+soroban-sdk = { version = "22.0.0", features = ["testutils"] }
+ed25519-dalek = { version = "2.2.0", default-features = false, features = ["rand_core"] }
+rand = "0.8.5"

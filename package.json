@@ -1,0 +1,15 @@
+{
+  "name": "shiftpay-stellar-agent",
+  "version": "1.0.0",
+  "description": "ShiftPay Escrow: Real-world wage streaming, merchant spending, and DeFindex yield integration on Stellar.",
+  "scripts": {
+    "test:anchor": "node scripts/anchor_integration.js",
+    "test:defindex": "node scripts/defindex_integration.js"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^13.0.0"
+  },
+  "devDependencies": {
+    "dotenv": "^16.4.5"
+  }
+}
