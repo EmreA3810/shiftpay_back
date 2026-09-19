@@ -1,18 +1,25 @@
+// SPDX-License-Identifier: Apache-2.0
 #![no_std]
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short, token,
-    Address, BytesN, Env,
+    contract, contractclient, contracterror, contractimpl, contracttype, symbol_short,
+    token, Address, BytesN, Env,
 };
 
-/// 30 Günlük Vade Süresi (Saniye)
-pub const THIRTY_DAYS_SECONDS: u64 = 30 * 24 * 60 * 60;
+// -----------------------------------------------------------------------------
+// TTL / Instance Sabitleri
+// -----------------------------------------------------------------------------
+pub const DAY_IN_LEDGERS: u32 = 17280;
+pub const INSTANCE_BUMP_AMOUNT: u32 = 30 * DAY_IN_LEDGERS;
+pub const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
-/// TTL Sabitleri (Soroban State Archival)
-const INSTANCE_BUMP_AMOUNT: u32 = 518_400; // ~30 gün
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 100_000;
-const PERSISTENT_BUMP_AMOUNT: u32 = 518_400;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = 100_000;
+pub const PERSISTENT_BUMP_AMOUNT: u32 = 60 * DAY_IN_LEDGERS;
+pub const PERSISTENT_LIFETIME_THRESHOLD: u32 = PERSISTENT_BUMP_AMOUNT - DAY_IN_LEDGERS;
 
+pub const THIRTY_DAYS_SECONDS: u64 = 30 * 24 * 60 * 60; // 2_592_000 saniye
+
+// -----------------------------------------------------------------------------
+// Hata Kodları (Error Codes)
+// -----------------------------------------------------------------------------
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -36,7 +43,7 @@ pub enum Error {
 }
 
 // -----------------------------------------------------------------------------
-// Kılavuz Entegrasyonu: DeFindex Vault Client Arayüzü (DeFi - Yield)
+// DeFindex Vault Client Arayüzü (DeFi - Yield)
 // -----------------------------------------------------------------------------
 #[contractclient(name = "DeFindexVaultClient")]
 pub trait DeFindexVaultInterface {
@@ -45,7 +52,7 @@ pub trait DeFindexVaultInterface {
 }
 
 // -----------------------------------------------------------------------------
-// 1. State & Structs
+// State & Structs
 // -----------------------------------------------------------------------------
 
 #[contracttype]
@@ -95,12 +102,14 @@ pub enum DataKey {
     SafetyReserveToken,
     SafetyReservePool,
     MinShiftDuration,
+    TokenAddress,
     EmployerVault(Address),
     WorkerWage(Address),
     WorkerShift(Address),
     WorkerClaim(BytesN<32>),
     WorkerDebt(Address),
     MerchantBalance(Address),
+    WorkerBalance(Address), // balances: Map<Address, i128> - her işçinin kullanılabilir/hak edilmiş bakiyesi
 }
 
 // -----------------------------------------------------------------------------
@@ -129,6 +138,7 @@ impl ShiftPayEscrow {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Supervisor, &supervisor);
         env.storage().instance().set(&DataKey::SafetyReserveToken, &reserve_token);
+        env.storage().instance().set(&DataKey::TokenAddress, &reserve_token);
         env.storage().instance().set(&DataKey::SafetyReservePool, &0i128);
         env.storage().instance().set(&DataKey::MinShiftDuration, &min_duration);
 
@@ -183,6 +193,8 @@ impl ShiftPayEscrow {
 
         let client = token::Client::new(&env, &token_address);
         client.transfer(&employer, &env.current_contract_address(), &amount);
+
+        env.storage().instance().set(&DataKey::TokenAddress, &token_address);
 
         let mut defindex_shares = 0i128;
 
@@ -279,8 +291,12 @@ impl ShiftPayEscrow {
         Ok(())
     }
 
-    /// 4. check_out: Minimum süre kontrol edilir, hakediş oluşturulur, varsa borç mahsup edilir
-    pub fn check_out(env: Env, employer: Address, worker: Address) -> Result<WorkerClaim, Error> {
+    /// 4. check_out:
+    /// Hiçbir transfer/ödeme işlemi yapmaz. Kontratın gerçek token bakiyesinden (pool_balance)
+    /// hiçbir şey düşmez - sadece muhasebe kaydı (accounting) güncellenir.
+    /// Sadece balances[işçi_adresi] += wages[işçi_adresi] şeklinde bakiyeyi artırır.
+    /// Fonksiyon güncel bakiyeyi (i128) döner.
+    pub fn check_out(env: Env, worker: Address) -> Result<i128, Error> {
         worker.require_auth();
 
         let shift_key = DataKey::WorkerShift(worker.clone());
@@ -312,37 +328,16 @@ impl ShiftPayEscrow {
             .get(&DataKey::WorkerWage(worker.clone()))
             .ok_or(Error::WageNotSet)?;
 
-        // İşverenin kilitli bütçesinden düşülür
-        let vault_key = DataKey::EmployerVault(employer.clone());
-        let mut vault: EmployerVault = env
-            .storage()
-            .persistent()
-            .get(&vault_key)
-            .ok_or(Error::InsufficientVaultBudget)?;
+        // Varsa temerrüt borcunu düş
+        let net_earned = Self::auto_repay_debt(env.clone(), worker.clone(), daily_wage)?;
 
-        if vault.locked_budget < daily_wage {
-            return Err(Error::InsufficientVaultBudget);
-        }
-        vault.locked_budget -= daily_wage;
-        env.storage().persistent().set(&vault_key, &vault);
-        env.storage().persistent().extend_ttl(&vault_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        // Sadece balances[işçi_adresi] += wages[işçi_adresi]
+        let balance_key = DataKey::WorkerBalance(worker.clone());
+        let current_bal: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
+        let new_bal = current_bal + net_earned;
 
-        // Otomatik borç kesintisi
-        let net_claim_amount = Self::auto_repay_debt(env.clone(), worker.clone(), daily_wage)?;
-
-        let maturity_timestamp = now + THIRTY_DAYS_SECONDS;
-        let claim = WorkerClaim {
-            worker: worker.clone(),
-            shift_id: shift.shift_id.clone(),
-            conditional_amount: net_claim_amount,
-            maturity_timestamp,
-            is_claimed: false,
-            is_transferred_to_merchant: false,
-        };
-
-        let claim_key = DataKey::WorkerClaim(shift.shift_id.clone());
-        env.storage().persistent().set(&claim_key, &claim);
-        env.storage().persistent().extend_ttl(&claim_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        env.storage().persistent().set(&balance_key, &new_bal);
+        env.storage().persistent().extend_ttl(&balance_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
         // Vardiyayı kapat
         env.storage().persistent().set(
@@ -355,83 +350,21 @@ impl ShiftPayEscrow {
         );
 
         env.events().publish(
-            (symbol_short!("chk_out"), worker, employer),
-            (shift.shift_id, daily_wage, net_claim_amount),
+            (symbol_short!("chk_out"), worker),
+            (daily_wage, new_bal),
         );
 
-        Ok(claim)
+        Ok(new_bal)
     }
 
-    /// issue_conditional_wage (Oracle/Supervisor doğrudan hakediş tanımlama yetkisi)
-    pub fn issue_conditional_wage(
-        env: Env,
-        employer: Address,
-        worker: Address,
-        shift_id: BytesN<32>,
-        amount: i128,
-    ) -> Result<WorkerClaim, Error> {
-        let supervisor: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Supervisor)
-            .ok_or(Error::NotInitialized)?;
-        supervisor.require_auth();
-
-        if amount <= 0 {
-            return Err(Error::InvalidAmount);
-        }
-
-        let claim_key = DataKey::WorkerClaim(shift_id.clone());
-        if env.storage().persistent().has(&claim_key) {
-            return Err(Error::ClaimAlreadyExists);
-        }
-
-        let vault_key = DataKey::EmployerVault(employer.clone());
-        let mut vault: EmployerVault = env
-            .storage()
-            .persistent()
-            .get(&vault_key)
-            .ok_or(Error::InsufficientVaultBudget)?;
-
-        if vault.locked_budget < amount {
-            return Err(Error::InsufficientVaultBudget);
-        }
-        vault.locked_budget -= amount;
-        env.storage().persistent().set(&vault_key, &vault);
-        env.storage().persistent().extend_ttl(&vault_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
-
-        let net_claim_amount = Self::auto_repay_debt(env.clone(), worker.clone(), amount)?;
-
-        let now = env.ledger().timestamp();
-        let maturity_timestamp = now + THIRTY_DAYS_SECONDS;
-
-        let claim = WorkerClaim {
-            worker: worker.clone(),
-            shift_id: shift_id.clone(),
-            conditional_amount: net_claim_amount,
-            maturity_timestamp,
-            is_claimed: false,
-            is_transferred_to_merchant: false,
-        };
-
-        env.storage().persistent().set(&claim_key, &claim);
-        env.storage().persistent().extend_ttl(&claim_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
-
-        env.events().publish(
-            (symbol_short!("wage_iss"), worker, employer),
-            (shift_id, net_claim_amount, maturity_timestamp),
-        );
-
-        Ok(claim)
-    }
-
-    /// 5. spend_at_merchant / transfer_claim_to_merchant:
-    /// İşçi hakedişini anlaşmalı esnafta (kahve, yemek) anında harcar.
+    /// 5. spend_at_merchant:
+    /// İşçi bakiyesinden anlaşmalı mağazada harcama yapar.
+    /// require(tutar <= balances[işçi_adresi]) kontrolü yapılır, bakiyeden düşülür,
+    /// mağazaya gerçek token transferi yapılır.
     pub fn spend_at_merchant(
         env: Env,
         worker: Address,
         merchant: Address,
-        shift_id: BytesN<32>,
         amount: i128,
     ) -> Result<(), Error> {
         worker.require_auth();
@@ -439,28 +372,29 @@ impl ShiftPayEscrow {
             return Err(Error::InvalidAmount);
         }
 
-        let claim_key = DataKey::WorkerClaim(shift_id.clone());
-        let mut claim: WorkerClaim = env
+        let bal_key = DataKey::WorkerBalance(worker.clone());
+        let current_bal: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+
+        if current_bal < amount {
+            return Err(Error::InsufficientClaimBalance);
+        }
+
+        let new_bal = current_bal - amount;
+        env.storage().persistent().set(&bal_key, &new_bal);
+        env.storage().persistent().extend_ttl(&bal_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        // Mağazaya gerçek transfer
+        let token_address: Address = env
             .storage()
-            .persistent()
-            .get(&claim_key)
-            .ok_or(Error::ClaimNotFound)?;
+            .instance()
+            .get(&DataKey::TokenAddress)
+            .or_else(|| env.storage().instance().get(&DataKey::SafetyReserveToken))
+            .ok_or(Error::NotInitialized)?;
 
-        if claim.worker != worker {
-            return Err(Error::InsufficientClaimBalance);
-        }
-        if claim.is_claimed {
-            return Err(Error::ClaimAlreadyClaimed);
-        }
-        if claim.conditional_amount < amount {
-            return Err(Error::InsufficientClaimBalance);
-        }
+        let client = token::Client::new(&env, &token_address);
+        client.transfer(&env.current_contract_address(), &merchant, &amount);
 
-        claim.conditional_amount -= amount;
-        claim.is_transferred_to_merchant = true;
-        env.storage().persistent().set(&claim_key, &claim);
-        env.storage().persistent().extend_ttl(&claim_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
-
+        // Esnaf alacak muhasebe kaydı
         let merchant_key = DataKey::MerchantBalance(merchant.clone());
         let current_m_bal: i128 = env.storage().persistent().get(&merchant_key).unwrap_or(0);
         let new_m_bal = current_m_bal + amount;
@@ -469,84 +403,56 @@ impl ShiftPayEscrow {
 
         env.events().publish(
             (symbol_short!("spend"), worker, merchant),
-            (shift_id, amount, new_m_bal),
+            (amount, new_bal),
         );
 
         Ok(())
     }
 
-    pub fn transfer_claim_to_merchant(
-        env: Env,
-        worker: Address,
-        merchant: Address,
-        shift_id: BytesN<32>,
-        amount: i128,
-    ) -> Result<(), Error> {
-        Self::spend_at_merchant(env, worker, merchant, shift_id, amount)
-    }
-
-    /// 6. withdraw / settle_matured_claim:
-    /// 30 günlük vade dolduğunda hak edişi Anchor (SEP-24) üzerinden TL çekimi için serbest bırakır.
+    /// 6. withdraw:
+    /// İşçi kullanılabilir bakiyesini Anchor (SEP-24) veya cüzdanına çeker.
+    /// require(tutar <= balances[işçi_adresi]) kontrolü yapılır, bakiyeden düşülür,
+    /// anchor SEP-24 / gerçek transfer akışını tetikler.
     pub fn withdraw(
         env: Env,
         worker: Address,
-        shift_id: BytesN<32>,
-        token_address: Address,
+        amount: i128,
     ) -> Result<(), Error> {
         worker.require_auth();
-
-        let claim_key = DataKey::WorkerClaim(shift_id.clone());
-        let mut claim: WorkerClaim = env
-            .storage()
-            .persistent()
-            .get(&claim_key)
-            .ok_or(Error::ClaimNotFound)?;
-
-        if claim.worker != worker {
-            return Err(Error::InsufficientClaimBalance);
-        }
-        if claim.is_claimed {
-            return Err(Error::ClaimAlreadyClaimed);
-        }
-
-        let now = env.ledger().timestamp();
-        if now < claim.maturity_timestamp {
-            return Err(Error::ClaimMaturityNotReached);
-        }
-
-        let payout = claim.conditional_amount;
-        if payout <= 0 {
+        if amount <= 0 {
             return Err(Error::InvalidAmount);
         }
 
-        claim.conditional_amount = 0;
-        claim.is_claimed = true;
-        env.storage().persistent().set(&claim_key, &claim);
+        let bal_key = DataKey::WorkerBalance(worker.clone());
+        let current_bal: i128 = env.storage().persistent().get(&bal_key).unwrap_or(0);
+
+        if current_bal < amount {
+            return Err(Error::InsufficientClaimBalance);
+        }
+
+        let new_bal = current_bal - amount;
+        env.storage().persistent().set(&bal_key, &new_bal);
+        env.storage().persistent().extend_ttl(&bal_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        let token_address: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::TokenAddress)
+            .or_else(|| env.storage().instance().get(&DataKey::SafetyReserveToken))
+            .ok_or(Error::NotInitialized)?;
 
         let client = token::Client::new(&env, &token_address);
-        client.transfer(&env.current_contract_address(), &worker, &payout);
+        client.transfer(&env.current_contract_address(), &worker, &amount);
 
-        env.events().publish((symbol_short!("withdraw"), worker), (shift_id, payout));
+        env.events().publish((symbol_short!("withdraw"), worker), (amount, new_bal));
         Ok(())
     }
 
-    pub fn settle_matured_claim(
-        env: Env,
-        worker: Address,
-        shift_id: BytesN<32>,
-        token_address: Address,
-    ) -> Result<(), Error> {
-        Self::withdraw(env, worker, shift_id, token_address)
-    }
-
-    /// 7. dispute_checkout / handle_worker_default:
-    /// İhlal/sahtecilik durumunda işçi temerrüde düşürülür (STATUS_DEBTOR).
-    /// İtibar skoru sıfırlanır, mağaza zararı Güvenlik Rezervinden karşılanır.
+    /// 7. dispute_checkout: İhlal durumunda işçi temerrüde düşürülür
     pub fn dispute_checkout(
         env: Env,
         employer: Address,
         worker: Address,
-        shift_id: BytesN<32>,
         spent_amount: i128,
     ) -> Result<(), Error> {
         employer.require_auth();
@@ -570,44 +476,16 @@ impl ShiftPayEscrow {
         env.storage().persistent().set(&debt_key, &debt_state);
         env.storage().persistent().extend_ttl(&debt_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
 
-        // Güvenlik rezerviyle mağaza zararını sübvanse et
-        if spent_amount > 0 {
-            let mut reserve_pool: i128 = env.storage().instance().get(&DataKey::SafetyReservePool).unwrap_or(0);
-            if reserve_pool >= spent_amount {
-                reserve_pool -= spent_amount;
-                env.storage().instance().set(&DataKey::SafetyReservePool, &reserve_pool);
-            }
-        }
-
-        let claim_key = DataKey::WorkerClaim(shift_id.clone());
-        if let Some(mut claim) = env.storage().persistent().get::<DataKey, WorkerClaim>(&claim_key) {
-            claim.conditional_amount = 0;
-            claim.is_claimed = true;
-            env.storage().persistent().set(&claim_key, &claim);
-        }
+        // İşçinin kullanılabilir bakiyesini sıfırla
+        let bal_key = DataKey::WorkerBalance(worker.clone());
+        env.storage().persistent().set(&bal_key, &0i128);
 
         env.events().publish(
             (symbol_short!("dispute"), employer, worker),
-            (shift_id, spent_amount, debt_state.total_debt),
+            (spent_amount, debt_state.total_debt),
         );
 
         Ok(())
-    }
-
-    pub fn handle_worker_default(
-        env: Env,
-        worker: Address,
-        shift_id: BytesN<32>,
-        spent_amount: i128,
-    ) -> Result<(), Error> {
-        let supervisor: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::Supervisor)
-            .ok_or(Error::NotInitialized)?;
-        supervisor.require_auth();
-
-        Self::dispute_checkout(env, supervisor, worker, shift_id, spent_amount)
     }
 
     /// 8. auto_repay_debt: Temerrüde düşmüş işçinin yeni kazançlarından borcu otomatik tahsil eder.
@@ -647,7 +525,7 @@ impl ShiftPayEscrow {
         Ok(remaining_earnings)
     }
 
-    /// 9. merchant_withdraw: Esnaf biriken hak edişini Anchor (SEP-24) ile kendi TL hesabına çeker.
+    /// 9. merchant_withdraw: Esnaf biriken hak edişini çeker
     pub fn merchant_withdraw(
         env: Env,
         merchant: Address,
@@ -681,6 +559,10 @@ impl ShiftPayEscrow {
     // Getter Fonksiyonları
     // -------------------------------------------------------------------------
 
+    pub fn get_worker_balance(env: Env, worker: Address) -> i128 {
+        env.storage().persistent().get(&DataKey::WorkerBalance(worker)).unwrap_or(0)
+    }
+
     pub fn get_employer_vault(env: Env, employer: Address) -> EmployerVault {
         env.storage().persistent().get(&DataKey::EmployerVault(employer.clone())).unwrap_or(EmployerVault {
             locked_budget: 0,
@@ -701,10 +583,6 @@ impl ShiftPayEscrow {
             is_active: false,
             shift_id: BytesN::from_array(&env, &[0u8; 32]),
         })
-    }
-
-    pub fn get_worker_claim(env: Env, shift_id: BytesN<32>) -> Option<WorkerClaim> {
-        env.storage().persistent().get(&DataKey::WorkerClaim(shift_id))
     }
 
     pub fn get_worker_debt_state(env: Env, worker: Address) -> WorkerDebtState {
