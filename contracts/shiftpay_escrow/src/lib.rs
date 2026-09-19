@@ -109,7 +109,8 @@ pub enum DataKey {
     WorkerClaim(BytesN<32>),
     WorkerDebt(Address),
     MerchantBalance(Address),
-    WorkerBalance(Address), // balances: Map<Address, i128> - her işçinin kullanılabilir/hak edilmiş bakiyesi
+    WorkerBalance(Address), // balances: Map<Address, i128> - her gün biriken harcama limiti
+    WorkerWithdrawMaturity(Address), // 30 gün sonra nakit çekim vadesi (timestamp)
 }
 
 // -----------------------------------------------------------------------------
@@ -331,13 +332,21 @@ impl ShiftPayEscrow {
         // Varsa temerrüt borcunu düş
         let net_earned = Self::auto_repay_debt(env.clone(), worker.clone(), daily_wage)?;
 
-        // Sadece balances[işçi_adresi] += wages[işçi_adresi]
+        // Sadece balances[işçi_adresi] += wages[işçi_adresi] - her gün limit tanımlanır ve birikir
         let balance_key = DataKey::WorkerBalance(worker.clone());
         let current_bal: i128 = env.storage().persistent().get(&balance_key).unwrap_or(0);
         let new_bal = current_bal + net_earned;
 
         env.storage().persistent().set(&balance_key, &new_bal);
         env.storage().persistent().extend_ttl(&balance_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+
+        // 30 gün sonra nakit çekim vadesi (ilk vardiyada başlatılır)
+        let maturity_key = DataKey::WorkerWithdrawMaturity(worker.clone());
+        if !env.storage().persistent().has(&maturity_key) {
+            let maturity_time = now + THIRTY_DAYS_SECONDS;
+            env.storage().persistent().set(&maturity_key, &maturity_time);
+            env.storage().persistent().extend_ttl(&maturity_key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
+        }
 
         // Vardiyayı kapat
         env.storage().persistent().set(
@@ -421,6 +430,14 @@ impl ShiftPayEscrow {
         worker.require_auth();
         if amount <= 0 {
             return Err(Error::InvalidAmount);
+        }
+
+        // 30 gün vade kontrolü (Nakit çekim sadece vade dolunca yapılabilir)
+        let maturity_key = DataKey::WorkerWithdrawMaturity(worker.clone());
+        let maturity_time: u64 = env.storage().persistent().get(&maturity_key).unwrap_or(0);
+        let now = env.ledger().timestamp();
+        if now < maturity_time {
+            return Err(Error::ClaimMaturityNotReached);
         }
 
         let bal_key = DataKey::WorkerBalance(worker.clone());
@@ -561,6 +578,10 @@ impl ShiftPayEscrow {
 
     pub fn get_worker_balance(env: Env, worker: Address) -> i128 {
         env.storage().persistent().get(&DataKey::WorkerBalance(worker)).unwrap_or(0)
+    }
+
+    pub fn get_worker_withdraw_maturity(env: Env, worker: Address) -> u64 {
+        env.storage().persistent().get(&DataKey::WorkerWithdrawMaturity(worker)).unwrap_or(0)
     }
 
     pub fn get_employer_vault(env: Env, employer: Address) -> EmployerVault {

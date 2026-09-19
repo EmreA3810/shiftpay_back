@@ -22,7 +22,7 @@ impl DeFindexVaultInterface for MockDeFindexVault {
 }
 
 #[test]
-fn test_shiftpay_accounting_and_real_transfer_lifecycle() {
+fn test_shiftpay_daily_limit_and_30_day_maturity_withdraw() {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -52,7 +52,7 @@ fn test_shiftpay_accounting_and_real_transfer_lifecycle() {
         &5, // min_duration: 5 seconds
     );
 
-    // 1. İşveren 20,000 token kilitler (kontrat havuzuna aktarılır)
+    // 1. İşveren 20,000 token kilitler
     client.deposit(
         &employer,
         &token_contract.address(),
@@ -64,78 +64,66 @@ fn test_shiftpay_accounting_and_real_transfer_lifecycle() {
     assert_eq!(token_client.balance(&worker), 0);
     assert_eq!(token_client.balance(&merchant), 0);
 
-    // 2. set_wage: Günlük ücret 1,000 TL
+    // 2. İşverenin işçiye günlük ücreti tanımlaması: 1,000 TL
     client.set_wage(&employer, &worker, &1_000);
-    assert_eq!(client.get_worker_wage(&worker), 1_000);
-
-    // 3. check_in: İşçi işe başlar
-    let shift_id: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
-    client.check_in(&worker, &shift_id);
-    assert!(client.get_shift(&worker).is_active);
-
-    // Mesai süresi ilerletilir
-    env.ledger().with_mut(|li| {
-        li.timestamp += 10;
-    });
 
     // -------------------------------------------------------------------------
-    // TEST SENARYOSU 1:
-    // İşçi check-out yapar → bakiyesi artar → hiçbir gerçek transfer/anchor işlemi tetiklenmemiş olmalı
+    // GÜN 1: Vardiya Tamamlandı, Limit Tanımlandı
     // -------------------------------------------------------------------------
-    let new_balance = client.check_out(&worker);
-    assert_eq!(new_balance, 1_000);
+    let shift_id_1: BytesN<32> = BytesN::from_array(&env, &[1u8; 32]);
+    client.check_in(&worker, &shift_id_1);
+    env.ledger().with_mut(|li| { li.timestamp += 10; });
+
+    let bal_day1 = client.check_out(&worker);
+    assert_eq!(bal_day1, 1_000);
     assert_eq!(client.get_worker_balance(&worker), 1_000);
-    assert!(!client.get_shift(&worker).is_active);
 
-    // ÖNEMLİ KONTROL: Kontratın token bakiyesinden hiçbir şey düşmemiş olmalı (20,000 aynen duruyor)
+    // Kontratın kilitli havuzundan HİÇBİR ŞEY düşmedi (DeFindex getirisinde kalır)
     assert_eq!(token_client.balance(&contract_id), 20_000);
-    // İşçiye veya mağazaya gerçek para gitmemiş olmalı
-    assert_eq!(token_client.balance(&worker), 0);
-    assert_eq!(token_client.balance(&merchant), 0);
 
     // -------------------------------------------------------------------------
-    // TEST SENARYOSU 2:
-    // İşçi spend_at_merchant çağırır → bakiyesi düşer, mağazaya gerçek transfer gider
+    // GÜN 1: İşçi Esnafta Hemen Harcama Yapabilir (Sıfır Vade)
     // -------------------------------------------------------------------------
     client.spend_at_merchant(&worker, &merchant, &400);
-    // İşçinin muhasebe bakiyesi düşer: 1000 - 400 = 600
-    assert_eq!(client.get_worker_balance(&worker), 600);
-    // Mağazaya GERÇEK transfer gider: Mağaza bakiyesi 400 olur
-    assert_eq!(token_client.balance(&merchant), 400);
-    // Kontratın gerçek havuzundan 400 düşer: 20000 - 400 = 19600
+    assert_eq!(client.get_worker_balance(&worker), 600); // 1000 - 400 = 600
+    assert_eq!(token_client.balance(&merchant), 400);    // Esnafa anında gitti
     assert_eq!(token_client.balance(&contract_id), 19_600);
 
     // -------------------------------------------------------------------------
-    // TEST SENARYOSU 3:
-    // İşçi withdraw çağırır → bakiyesi düşer, anchor withdraw akışı başlar
+    // GÜN 1: İşçi Henüz 30 Gün Dolmadan Nakit Çekim Yapamaz!
     // -------------------------------------------------------------------------
-    client.withdraw(&worker, &300);
-    // İşçinin muhasebe bakiyesi düşer: 600 - 300 = 300
-    assert_eq!(client.get_worker_balance(&worker), 300);
-    // İşçiye / Anchor cüzdanına GERÇEK transfer gider: 300
-    assert_eq!(token_client.balance(&worker), 300);
-    // Kontratın gerçek havuzundan 300 daha düşer: 19600 - 300 = 19300
-    assert_eq!(token_client.balance(&contract_id), 19_300);
+    let early_withdraw_res = client.try_withdraw(&worker, &200);
+    assert!(early_withdraw_res.is_err()); // ClaimMaturityNotReached
 
     // -------------------------------------------------------------------------
-    // TEST SENARYOSU 4:
-    // İşçi bakiyesinden fazlasını harcamaya/çekmeye çalışırsa işlem reddedilmeli
+    // GÜN 2: İşçi Yeni Bir Gün Çalışır, Limit Tekrar Eklenir (Birikir)
     // -------------------------------------------------------------------------
-    // Kalan bakiye: 300. 500 harcamaya çalışırsa Err(InsufficientClaimBalance)
-    let spend_res = client.try_spend_at_merchant(&worker, &merchant, &500);
-    assert!(spend_res.is_err());
+    let shift_id_2: BytesN<32> = BytesN::from_array(&env, &[2u8; 32]);
+    client.check_in(&worker, &shift_id_2);
+    env.ledger().with_mut(|li| { li.timestamp += 10; });
 
-    // 500 çekmeye çalışırsa Err(InsufficientClaimBalance)
-    let withdraw_res = client.try_withdraw(&worker, &500);
-    assert!(withdraw_res.is_err());
+    let bal_day2 = client.check_out(&worker);
+    // Kalan 600 TL limitine yeni günün 1,000 TL hak edişi eklendi = 1,600 TL
+    assert_eq!(bal_day2, 1_600);
+    assert_eq!(client.get_worker_balance(&worker), 1_600);
 
-    // Bakiye ve token tutarları değişmemiş olmalı
-    assert_eq!(client.get_worker_balance(&worker), 300);
-    assert_eq!(token_client.balance(&worker), 300);
-    assert_eq!(token_client.balance(&merchant), 400);
-    assert_eq!(token_client.balance(&contract_id), 19_300);
+    // -------------------------------------------------------------------------
+    // 30 GÜN SONRA: Vade Doldu, Mobilden Nakit Çekim Artık Yapılabilir
+    // -------------------------------------------------------------------------
+    env.ledger().with_mut(|li| {
+        li.timestamp += THIRTY_DAYS_SECONDS + 1;
+    });
+
+    // 30 gün dolduğu için işçi 600 TL nakit çekim yapabilir
+    client.withdraw(&worker, &600);
+    assert_eq!(client.get_worker_balance(&worker), 1_000); // 1600 - 600 = 1000
+    assert_eq!(token_client.balance(&worker), 600);       // İşçiye nakit aktarıldı
+    assert_eq!(token_client.balance(&contract_id), 19_000);
+
+    // Limitinden fazla çekmeye çalışırsa (1,000 varken 1,500 çekerse) reddedilir
+    let overdraft_res = client.try_withdraw(&worker, &1_500);
+    assert!(overdraft_res.is_err()); // InsufficientClaimBalance
 }
-
 
 #[test]
 fn test_shiftpay_min_duration_and_double_checkout_protection() {
